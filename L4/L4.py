@@ -14,6 +14,7 @@
 # OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 """Implementation of L4 stepsize adaptation scheme proposed in (Rolinek, Martius, 2018)"""
 
+import math
 import tensorflow as tf
 
 
@@ -25,7 +26,7 @@ def time_factor(time_step):
     """ Routine used for bias correction in exponential moving averages, as in (Kingma, Ba, 2015) """
     global_step = 1 + tf.train.get_or_create_global_step()
     decay = 1.0 - 1.0 / time_step
-    return 1.0 - tf.exp((tf.cast(global_step, tf.float32)) * tf.log(decay))
+    return 1.0 - tf.exp((tf.cast(global_step, tf.float32)) * math.log(decay))
 
 
 class AdamTransform(object):
@@ -47,10 +48,10 @@ class AdamTransform(object):
 
         with tf.control_dependencies([shadow_op_gr, shadow_op_var]):
             correction_term_1 = time_factor(self.time_scale_grad)
-            avg_grads = [self.EMAgrad.average(grad) / correction_term_1 for grad in grads]
+            avg_grads = [self.EMAgrad.average(grad) / tf.cast(correction_term_1, grad.dtype) for grad in grads]
 
             correction_term_2 = time_factor(self.time_scale_var)
-            avg_vars = [self.EMAvar.average(var) / correction_term_2 for var in vars]
+            avg_vars = [self.EMAvar.average(var) / tf.cast(correction_term_2, var.dtype) for var in vars]
             return [(grad / (tf.sqrt(var) + self.epsilon)) for grad, var in zip(avg_grads, avg_vars)]
 
 
@@ -66,7 +67,7 @@ class MomentumTransform(object):
         shadow_op_gr = self.EMAgrad.apply(grads)
         with tf.control_dependencies([shadow_op_gr]):
             correction_term = time_factor(self.time_momentum)
-            new_grads = [self.EMAgrad.average(grad) / correction_term for grad in grads]
+            new_grads = [self.EMAgrad.average(grad) / tf.cast(correction_term, grad.dtype) for grad in grads]
             return [tf.identity(grad) for grad in new_grads]
 
 
@@ -82,7 +83,8 @@ class L4General(tf.train.GradientDescentOptimizer):
     def __init__(self, fraction=0.15, minloss_factor=0.9, init_factor=0.75,
                  minloss_forget_time=1000.0, epsilon=1e-12,
                  gradient_estimator='momentum', gradient_params=None,
-                 direction_estimator='adam', direction_params=None):
+                 direction_estimator='adam', direction_params=None,
+                 dtype=tf.float32):
         """
         :param fraction: [alpha], fraction of 'optimal stepsize'
         :param minloss_factor: [gamma], fraction of min seen loss that is considered achievable
@@ -96,7 +98,7 @@ class L4General(tf.train.GradientDescentOptimizer):
         """
         tf.train.GradientDescentOptimizer.__init__(self, 1.0)
         with tf.variable_scope('L4Optimizer', reuse=tf.AUTO_REUSE):
-            self.min_loss = tf.get_variable(name='min_loss', shape=(),
+            self.min_loss = tf.get_variable(name='min_loss', shape=(), dtype=dtype,
                                             initializer=tf.constant_initializer(0.0), trainable=False)
         self.fraction = fraction
         self.minloss_factor = minloss_factor
@@ -133,7 +135,9 @@ class L4General(tf.train.GradientDescentOptimizer):
             derivatives = self.deriv_estimate(grads)
 
             min_loss_to_use = self.minloss_factor * self.min_loss
+            self.inner = n_inner_product(directions, derivatives)
             l_rate = self.fraction*(self.loss - min_loss_to_use) / (n_inner_product(directions, derivatives)+self.epsilon)
+
             new_grads = [direction*l_rate for direction in directions]
             tf.summary.scalar('effective_learning_rate', l_rate)
             tf.summary.scalar('min_loss_estimate', self.min_loss)
@@ -156,10 +160,10 @@ class L4Adam(L4General):
     Specialization of the L4 stepsize adaptation with Adam used for gradient updates and Mom for gradient estimation.
     """
     def __init__(self, fraction=0.15, minloss_factor=0.9, init_factor=0.75, minloss_forget_time=1000.0,
-                 epsilon=1e-12, adam_params=None):
+                 epsilon=1e-12, adam_params=None, dtype=tf.float32):
         L4General.__init__(self, fraction, minloss_factor, init_factor, minloss_forget_time,
                            epsilon, gradient_estimator='momentum', direction_estimator='adam',
-                           direction_params=adam_params)
+                           direction_params=adam_params, dtype=dtype)
 
 
 class L4Mom(L4General):
@@ -167,7 +171,7 @@ class L4Mom(L4General):
     Specialization of the L4 stepsize adaptation with Mom used for both gradient estimation and an update direction.
     """
     def __init__(self, fraction=0.15, minloss_factor=0.9, init_factor=0.75, minloss_forget_time=1000.0,
-                 epsilon=1e-12, mom_params=None):
+                 epsilon=1e-12, mom_params=None, dtype=tf.float32):
         L4General.__init__(self, fraction, minloss_factor, init_factor, minloss_forget_time,
                            epsilon, gradient_estimator='momentum', direction_estimator='momentum',
-                           direction_params=mom_params)
+                           direction_params=mom_params, dtype=dtype)
