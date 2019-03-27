@@ -137,7 +137,8 @@ class L4General(tf.train.GradientDescentOptimizer):
             new_grads = [direction*l_rate for direction in directions]
             tf.summary.scalar('effective_learning_rate', l_rate)
             tf.summary.scalar('min_loss_estimate', self.min_loss)
-            ml_update2 = self.min_loss.assign(self.minloss_increase_rate * self.min_loss)
+            with tf.control_dependencies(new_grads):
+                ml_update2 = self.min_loss.assign(self.minloss_increase_rate * self.min_loss)
 
             with tf.control_dependencies([ml_update2]):
                 return tf.train.GradientDescentOptimizer.apply_gradients(self, zip(new_grads, vars), global_step, name)
